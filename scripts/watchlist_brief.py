@@ -71,7 +71,7 @@ def digest(now):
     lines = [f"@{os.environ['GITHUB_REPOSITORY_OWNER']}", f"**{lead}**",
              "以下是首次买入的观察名单。四家银行受相似因素影响，可以放在一起比较。"]
     lines.extend(f"- **{name}（{code}）｜{status}**　{detail}" for name, code, status, detail in rows)
-    lines.append("仅在交易日收盘后更新。候选表示值得进一步研究，没有盘中到价提醒。")
+    lines.append("这封简报在交易日收盘后更新。盘中若出现经确认的价格突破，会另发提醒；收到时请先核对券商实时报价。")
     Path("brief-title.txt").write_text(title, encoding="utf-8")
     Path("brief-body.md").write_text("\n\n".join(lines), encoding="utf-8")
 
