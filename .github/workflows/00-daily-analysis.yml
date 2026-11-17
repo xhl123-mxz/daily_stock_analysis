@@ -100,7 +100,8 @@ jobs:
               summary = str(core.get("one_sentence") or advice or row[2])[:280]
               caution = any(x in summary + advice for x in ("等","观望","暂","不宜","不建议","谨慎","避免","不买","不要","不入场","不建仓"))
               entry = not caution and row[1] in ("买入","强烈买入","建仓") and any(x in advice for x in ("入场","建仓","买入","介入"))
-              data = dict(time=datetime.now(timezone.utc).isoformat(),view=row[2],summary=summary,entry=entry)
+              exit_signal = row[1] in ("卖出", "减仓", "止损", "清仓") and str(raw.get("action") or raw.get("decision_type")).lower() in ("sell","reduce","strong_sell","exit")
+              data = dict(exit_signal=exit_signal,time=datetime.now(timezone.utc).isoformat(),view=row[2],summary=summary,entry=entry)
               Path(code+".json").write_text(json.dumps(data,ensure_ascii=False))
           PY
       - uses: actions/upload-artifact@v4
