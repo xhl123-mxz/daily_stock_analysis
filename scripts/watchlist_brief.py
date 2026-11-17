@@ -24,6 +24,7 @@ def observe(code, now):
         "SELECT operation_advice, raw_result FROM analysis_history "
         "WHERE code=? ORDER BY id DESC LIMIT 1", (code,)
     ).fetchone()
+    db.close()
     session_closed = now.hour >= 15 and bars and bars[0][0] == now.date().isoformat()
     if len(bars) < 21 or not session_closed:
         return "待确认", "还没有核实今天的完整收盘数据，等收盘更新。"
