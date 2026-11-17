@@ -54,7 +54,7 @@ jobs:
         if: steps.calendar.outputs.run == 'true'
         run: |
           docker run -d --name ollama -p 127.0.0.1:11434:11434 -e OLLAMA_CONTEXT_LENGTH=16384 ollama/ollama
-          curl --fail --silent --retry 15 --retry-connrefused --retry-delay 2 http://localhost:11434/api/version
+          curl --fail --silent --retry 15 --retry-all-errors --retry-delay 2 http://127.0.0.1:11434/api/version
           docker exec ollama ollama pull qwen2.5:3b
       - name: 分析并展示报告
         if: steps.calendar.outputs.run == 'true'
