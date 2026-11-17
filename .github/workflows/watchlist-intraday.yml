@@ -1,0 +1,53 @@
+name: 八只自选股盘中观察
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/watchlist-intraday.yml
+      - scripts/watchlist_intraday.py
+  schedule:
+    - cron: '10 1 * * 1-5'
+    - cron: '15 2 * * 1-5'
+    - cron: '45 4 * * 1-5'
+    - cron: '45 5 * * 1-5'
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: watchlist-intraday
+  cancel-in-progress: false
+
+jobs:
+  observe:
+    if: github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 165
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: ''
+      - name: 检查A股交易日
+        id: session
+        run: |
+          python -m pip -q install 'exchange-calendars>=4.13,<5'
+          python - <<'PY'
+          import os
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          import exchange_calendars as xc
+          day = datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              print('open=' + str(xc.get_calendar('XSHG').is_session(day)).lower(), file=output)
+          PY
+      - name: 每30秒观察行情，触发后通知
+        if: steps.session.outputs.open == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SESSION_CRON: ${{ github.event.schedule }}
+        run: python -u scripts/watchlist_intraday.py
