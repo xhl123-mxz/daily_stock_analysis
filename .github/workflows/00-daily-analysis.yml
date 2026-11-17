@@ -1,11 +1,11 @@
-name: 八只自选股收盘提醒
+name: 更新网页 AI 观察
 on:
   push:
     paths:
       - .github/workflows/00-daily-analysis.yml
   workflow_dispatch:
   schedule:
-    - cron: '17 10 * * 1-5'
+    - cron: '5 1,4,10 * * 1-5'
 
 permissions:
   contents: read
@@ -85,7 +85,24 @@ jobs:
           cat "$report" >> "$GITHUB_STEP_SUMMARY"
       - name: 提取当日观察结果
         if: ${{ !cancelled() && steps.calendar.outputs.run == 'true' }}
-        run: python scripts/watchlist_brief.py "$STOCK_LIST"
+        run: |
+          python - <<'PY'
+          import json, os, sqlite3
+          from pathlib import Path
+          from datetime import datetime, timezone
+          code = os.environ["STOCK_LIST"]
+          db = sqlite3.connect("file:data/stock_analysis.db?mode=ro", uri=True)
+          row = db.execute("SELECT raw_result,operation_advice,trend_prediction FROM analysis_history WHERE code=? ORDER BY id DESC LIMIT 1",(code,)).fetchone()
+          if row:
+              raw = json.loads(row[0])
+              core = (raw.get("dashboard") or {}).get("core_conclusion") or {}
+              advice = str((core.get("position_advice") or {}).get("no_position") or "")
+              summary = str(core.get("one_sentence") or advice or row[2])[:280]
+              caution = any(x in summary + advice for x in ("等","观望","暂","不宜","不建议","谨慎","避免","不买","不要","不入场","不建仓"))
+              entry = not caution and row[1] in ("买入","强烈买入","建仓") and any(x in advice for x in ("入场","建仓","买入","介入"))
+              data = dict(time=datetime.now(timezone.utc).isoformat(),view=row[2],summary=summary,entry=entry)
+              Path(code+".json").write_text(json.dumps(data,ensure_ascii=False))
+          PY
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() && steps.calendar.outputs.run == 'true' }}
         with:
@@ -94,13 +111,12 @@ jobs:
           retention-days: 1
           if-no-files-found: warn
 
-  notify:
+  publish:
     needs: analyze
     if: ${{ !cancelled() && github.event.repository.private == false && (needs.analyze.outputs.trading_day == 'true' || needs.analyze.result == 'failure') }}
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      issues: write
+      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -110,10 +126,19 @@ jobs:
           pattern: brief-*
           path: briefs
           merge-multiple: true
-      - name: 发送一封自选股简报
+      - name: 发布网页模型数据
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/watchlist_brief.py digest
-          cat brief-body.md >> "$GITHUB_STEP_SUMMARY"
-          gh issue create --repo "$GITHUB_REPOSITORY" --title "$(cat brief-title.txt)" --body-file brief-body.md
+          python - <<'PY'
+          import base64,json,os,subprocess
+          from pathlib import Path
+          files = list(Path("briefs").glob("*.json"))
+          if not files:
+              raise SystemExit("没有可用的新分析")
+          payload = {f.stem: json.loads(f.read_text()) for f in files}
+          api = "repos/"+os.environ["GITHUB_REPOSITORY"]+"/contents/web-data/ai.json"
+          sha = subprocess.check_output(["gh","api",api,"--jq",".sha"],text=True).strip()
+          change = dict(sha=sha,message="更新网页 AI 分析 [skip ci]",content=base64.b64encode(json.dumps(payload,ensure_ascii=False).encode()).decode())
+          subprocess.run(["gh","api","-X","PUT",api,"--input","-","--silent"],input=json.dumps(change),text=True,check=True)
+          PY
