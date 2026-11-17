@@ -1,4 +1,4 @@
-name: 工商银行收盘分析
+name: 八只自选股收盘提醒
 on:
   push:
     paths:
@@ -9,7 +9,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
   group: icbc-analysis
@@ -19,10 +18,16 @@ jobs:
   analyze:
     if: github.event.repository.private == false
     runs-on: ubuntu-latest
-    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        stock: ['002594', '601398', '601288', '601988', '601939', '600900', '600941', '600887']
+    outputs:
+      trading_day: ${{ steps.calendar.outputs.run }}
+    timeout-minutes: 35
     env:
       TZ: Asia/Shanghai
-      STOCK_LIST: '601398'
+      STOCK_LIST: ${{ matrix.stock }}
       LITELLM_MODEL: icbc-local
       LITELLM_CONFIG: /tmp/icbc-model.yml
       REPORT_INTEGRITY_RETRY: '0'
@@ -60,6 +65,7 @@ jobs:
           curl --fail --silent --retry 15 --retry-all-errors --retry-delay 2 http://127.0.0.1:11434/api/version
           docker exec ollama ollama pull qwen2.5:3b
       - name: 分析并展示报告
+        id: report
         if: steps.calendar.outputs.run == 'true'
         run: |
           cat > "$LITELLM_CONFIG" <<'YAML'
@@ -75,49 +81,39 @@ jobs:
           python main.py --stocks "$STOCK_LIST" --force-run --no-market-review --no-notify
           report=$(find reports -type f -name 'report_*.md' -size +0c -print -quit)
           test -n "$report"
-          grep -q '601398' "$report"
+          grep -q "$STOCK_LIST" "$report"
           cat "$report" >> "$GITHUB_STEP_SUMMARY"
-      - name: 准备工行邮件短报
-        if: steps.calendar.outputs.run == 'true'
-        run: |
-          python - <<'PY'
-          import json, os, sqlite3
-          from datetime import datetime
-          from pathlib import Path
-          from zoneinfo import ZoneInfo
-          db = sqlite3.connect("file:data/stock_analysis.db?mode=ro", uri=True)
-          advice, raw = db.execute("SELECT operation_advice, raw_result FROM analysis_history WHERE code=? ORDER BY id DESC LIMIT 1", ("601398",)).fetchone()
-          result = json.loads(raw)
-          phase = (result.get("dashboard") or {}).get("phase_decision") or {}
-          action = str(result.get("action") or result.get("decision_type") or "").lower()
-          core = (result.get("dashboard") or {}).get("core_conclusion") or {}
-          holders = (core.get("position_advice") or {}).get("has_position") if isinstance(core.get("position_advice"), dict) else ""
-          holder_support = any(word in str(holders or "") for word in ("加仓", "增持", "补仓"))
-          context = str(holders or "") + str(core.get("one_sentence") or "") + str(phase.get("immediate_action") or "")
-          wait = any(word in context for word in ("观望", "等待", "观察", "维持", "保持", "不宜", "不加", "不建议", "暂不", "不要", "避免", "谨慎", "禁止"))
-          if holder_support and not wait and (advice in ("买入", "加仓", "强烈买入") and action in ("buy", "strong_buy", "add")):
-              verdict = "出现候选买点，先核对条件"
-          elif advice in ("减仓", "卖出", "止损", "强烈卖出") or action in ("sell", "reduce"):
-              verdict = "风险升高，暂不考虑加仓"
-          else:
-              verdict = "先观察，暂无明确加仓信号"
-          conditions = phase.get("watch_conditions") or []
-          terms = {"放量下跌": "成交比平时多，股价却在跌", "缩量回调": "股价回落，成交比平时少", "放量突破": "成交增加，股价涨过之前难以突破的位置"}
-          def plain(value):
-              for term, explanation in terms.items():
-                  value = value.replace(term, explanation)
-              return value
-          points = [plain(v.strip()).replace("@", "＠") for v in conditions if isinstance(v, str) and v.strip()][:2]
-          now = datetime.now(ZoneInfo("Asia/Shanghai"))
-          period = "收盘" if os.environ["GITHUB_EVENT_NAME"] == "schedule" else "手动测试"
-          title = f"工行提醒｜{now:%m月%d日} {period}｜{verdict}"
-          body = [f"@{os.environ['GITHUB_REPOSITORY_OWNER']}", f"**工商银行 601398 · {now:%Y-%m-%d %H:%M}（北京时间）**", f"模型判断：{verdict}。", "接下来留意：" + ("；".join(points) if points else "报告没有给出可核实的买入条件，等下一份收盘报告。"), "这是一次分析，不是盘中到价提醒。"]
-          Path("/tmp/icbc-title").write_text(title)
-          Path("/tmp/icbc-body").write_text("\n\n".join(body))
-          PY
-      - name: 通知仓库主人
-        if: steps.calendar.outputs.run == 'true'
+      - name: 提取当日观察结果
+        if: ${{ !cancelled() && steps.calendar.outputs.run == 'true' }}
+        run: python scripts/watchlist_brief.py "$STOCK_LIST"
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && steps.calendar.outputs.run == 'true' }}
+        with:
+          name: brief-${{ matrix.stock }}
+          path: ${{ matrix.stock }}.json
+          retention-days: 1
+          if-no-files-found: warn
+
+  notify:
+    needs: analyze
+    if: ${{ !cancelled() && github.event.repository.private == false && (needs.analyze.outputs.trading_day == 'true' || needs.analyze.result == 'failure') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: brief-*
+          path: briefs
+          merge-multiple: true
+      - name: 发送一封自选股简报
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh issue create --repo "$GITHUB_REPOSITORY" --title "$(cat /tmp/icbc-title)" --body-file /tmp/icbc-body
+          python3 scripts/watchlist_brief.py digest
+          cat brief-body.md >> "$GITHUB_STEP_SUMMARY"
+          gh issue create --repo "$GITHUB_REPOSITORY" --title "$(cat brief-title.txt)" --body-file brief-body.md
