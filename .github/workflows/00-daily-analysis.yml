@@ -22,7 +22,9 @@ jobs:
     env:
       TZ: Asia/Shanghai
       STOCK_LIST: '601398'
-      LITELLM_MODEL: ollama/qwen2.5:3b
+      LITELLM_MODEL: icbc-local
+      LITELLM_CONFIG: /tmp/icbc-model.yml
+      REPORT_INTEGRITY_RETRY: '0'
       OLLAMA_API_BASE: http://127.0.0.1:11434
       LLM_TIMEOUT_SEC: '600'
       AGENT_MODE: 'false'
@@ -59,6 +61,16 @@ jobs:
       - name: 分析并展示报告
         if: steps.calendar.outputs.run == 'true'
         run: |
+          cat > "$LITELLM_CONFIG" <<'YAML'
+          model_list:
+            - model_name: icbc-local
+              litellm_params:
+                model: openai/qwen2.5:3b
+                api_base: http://127.0.0.1:11434/v1
+                api_key: local
+                response_format:
+                  type: json_object
+          YAML
           python main.py --stocks "$STOCK_LIST" --force-run --no-market-review --no-notify
           report=$(find reports -type f -name 'report_*.md' -size +0c -print -quit)
           test -n "$report"
