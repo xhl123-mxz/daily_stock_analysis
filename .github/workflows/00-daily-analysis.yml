@@ -90,14 +90,24 @@ jobs:
           result = json.loads(raw)
           phase = (result.get("dashboard") or {}).get("phase_decision") or {}
           action = str(result.get("action") or result.get("decision_type") or "").lower()
-          if (advice in ("买入", "加仓", "强烈买入") and action in ("buy", "strong_buy", "add")):
+          core = (result.get("dashboard") or {}).get("core_conclusion") or {}
+          holders = (core.get("position_advice") or {}).get("has_position") if isinstance(core.get("position_advice"), dict) else ""
+          holder_support = any(word in str(holders or "") for word in ("加仓", "增持", "补仓"))
+          context = str(holders or "") + str(core.get("one_sentence") or "") + str(phase.get("immediate_action") or "")
+          wait = any(word in context for word in ("观望", "等待", "观察", "维持", "保持", "不宜", "不加", "不建议", "暂不", "不要", "避免", "谨慎", "禁止"))
+          if holder_support and not wait and (advice in ("买入", "加仓", "强烈买入") and action in ("buy", "strong_buy", "add")):
               verdict = "出现候选买点，先核对条件"
           elif advice in ("减仓", "卖出", "止损", "强烈卖出") or action in ("sell", "reduce"):
               verdict = "风险升高，暂不考虑加仓"
           else:
               verdict = "先观察，暂无明确加仓信号"
           conditions = phase.get("watch_conditions") or []
-          points = [v.strip().replace("@", "＠") for v in conditions if isinstance(v, str) and v.strip()][:2]
+          terms = {"放量下跌": "成交比平时多，股价却在跌", "缩量回调": "股价回落，成交比平时少", "放量突破": "成交增加，股价涨过之前难以突破的位置"}
+          def plain(value):
+              for term, explanation in terms.items():
+                  value = value.replace(term, explanation)
+              return value
+          points = [plain(v.strip()).replace("@", "＠") for v in conditions if isinstance(v, str) and v.strip()][:2]
           now = datetime.now(ZoneInfo("Asia/Shanghai"))
           period = "收盘" if os.environ["GITHUB_EVENT_NAME"] == "schedule" else "手动测试"
           title = f"工行提醒｜{now:%m月%d日} {period}｜{verdict}"
